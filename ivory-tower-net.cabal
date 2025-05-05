@@ -1,0 +1,51 @@
+cabal-version:       2.2
+name:                ivory-tower-net
+version:             0.1.0.0
+synopsis:            Ethernet protocols implementation
+description:         ARP, ICMP, IP, UDP support
+license:             BSD-3-Clause
+author:              Sorki
+maintainer:          srk@48.io
+copyright:           2025 Sorki
+category:            Embedded
+build-type:          Simple
+
+library
+  hs-source-dirs:   src
+  exposed-modules:  Ivory.Tower.Net
+                    Ivory.Tower.Net.Checksum
+                    Ivory.Tower.Net.Structs
+                    Ivory.Tower.Net.Types
+                    Ivory.Tower.Net.Types.ARP
+                    Ivory.Tower.Net.Types.EtherType
+                    Ivory.Tower.Net.Types.ICMP
+                    Ivory.Tower.Net.Types.IP
+                    Ivory.Tower.Net.Types.TCP
+                    Ivory.Tower.Net.Util
+
+  build-depends:    base >= 4.6
+                  , ivory
+                  , ivory-bsp-stm32
+                  , ivory-serialize
+                  , ivory-stdlib
+                  , tower
+                  , tower-config
+                  , tower-hal
+
+  default-language: Haskell2010
+  ghc-options:      -Wall -Wunused-packages
+
+test-suite test
+  hs-source-dirs: test
+  type:           exitcode-stdio-1.0
+  main-is:        Test.hs
+  ghc-options:    -Wall -Wunused-packages
+  build-depends: base >= 4.6 && < 5
+               , ivory
+               , ivory-artifact
+               , ivory-bsp-stm32
+               , ivory-serialize
+               , ivory-tasty
+               , ivory-tower-net
+
+  default-language: Haskell2010
