@@ -24,12 +24,12 @@ checksum buf fromOffset len = do
     b <- deref $ buf ~> stringDataL ! (off + ix * 2 + 1)
     summed += ((safeCast a) `iShiftL` 8 .| safeCast b)
 
-  -- If len is even, add remaining byte
+  -- If len is odd, add remaining byte
   when
     (len .% 2 ==? 1)
     $ do
         e <- deref $ buf ~> stringDataL ! (off + toIx len - 1)
-        summed += safeCast e
+        summed += (safeCast e `iShiftL` 8)
 
   forever $ do
     c <- deref summed
