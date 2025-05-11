@@ -39,6 +39,17 @@ udpHeaderLength = 8
 udpOffset :: Uint16
 udpOffset = ipOffset + udpHeaderLength
 
+-- ** Checksum offsets
+
+icmpChecksumOffset :: Uint16
+icmpChecksumOffset = ipOffset + 2
+
+ipChecksumOffset :: Uint16
+ipChecksumOffset = ethOffset + 10
+
+udpChecksumOffset :: Uint16
+udpChecksumOffset = ipOffset + 6
+
 -- * Structs
 
 [ivory|

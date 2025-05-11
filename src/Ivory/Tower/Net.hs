@@ -207,18 +207,15 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
           (safeCast ethOffset)
           (constRef ipHeader)
 
-        i <- checksum
+        ipChecksum <- checksum
           udpReq
           ethOffset
           (safeCast ipHeaderLength)
 
-        store
-          (udpReq ~> stringDataL ! (toIx $ ethOffset + 10))
-          $ bitCast (i `iShiftR` 8)
-
-        store
-          (udpReq ~> stringDataL ! (toIx $ ethOffset + 11))
-          $ bitCast i
+        storeChecksum
+          udpReq
+          ipChecksumOffset
+          ipChecksum
 
         pseudoHeader <-
           local
@@ -260,7 +257,6 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
           (safeCast ipOffset)
           (constRef udpHeader)
 
-
         arrayCopy
           (udpReq ~> stringDataL)
           (pendingTx ~> udp_tx_data ~> stringDataL)
@@ -275,18 +271,16 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
 
         combined
           <- assign
+          $ bitCast
           $ iComplement
           $ (\x -> (x >=? 0xFFFF) ? (x + 1, x))
           $   ((safeCast :: Uint16 -> Uint32) $ iComplement pseudoHeaderChecksum)
             + ((safeCast :: Uint16 -> Uint32) $ iComplement udpChecksum)
 
-        store
-          (udpReq ~> stringDataL ! (toIx $ ipOffset + 6))
-          $ bitCast (combined `iShiftR` 8)
-
-        store
-          (udpReq ~> stringDataL ! (toIx $ ipOffset + 7))
-          $ bitCast combined
+        storeChecksum
+          udpReq
+          udpChecksumOffset
+          combined
 
         store
           (udpReq ~> stringLengthL)
@@ -460,18 +454,15 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
                           (safeCast ethOffset)
                           (constRef ipHeader)
 
-                        i <- checksum
+                        ipChecksum <- checksum
                           pingRep
                           ethOffset
                           (safeCast ipHeaderLength)
 
-                        store
-                          (pingRep ~> stringDataL ! (toIx $ ethOffset + 10))
-                          $ bitCast (i `iShiftR` 8)
-
-                        store
-                          (pingRep ~> stringDataL ! (toIx $ ethOffset + 11))
-                          $ bitCast i
+                        storeChecksum
+                          pingRep
+                          ipChecksumOffset
+                          ipChecksum
 
                         store
                           (decodedICMP ~> icmp_packet_type)
@@ -486,18 +477,15 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
                           (safeCast ipOffset)
                           (constRef decodedICMP)
 
-                        x <- checksum
+                        icmpChecksum <- checksum
                           pingRep
                           ipOffset
                           (rxLen - safeCast ipOffset)
 
-                        store
-                          (pingRep ~> stringDataL ! (toIx $ ipOffset + 2))
-                          $ bitCast (x `iShiftR` 8)
-
-                        store
-                          (pingRep ~> stringDataL ! (toIx $ ipOffset + 3))
-                          $ bitCast x
+                        storeChecksum
+                          pingRep
+                          icmpChecksumOffset
+                          icmpChecksum
 
                         emit txE (constRef pingRep)
 
@@ -573,3 +561,17 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
     ( BackpressureTransmit (fst udpTx) (snd udpTxDone)
     , snd udpRx
     )
+
+storeChecksum
+  :: Ref s FrameBuffer
+  -> Uint16
+  -> Uint16
+  -> Ivory eff ()
+storeChecksum buffer offset csum = do
+  store
+    (buffer ~> stringDataL ! (toIx offset))
+    $ bitCast (csum `iShiftR` 8)
+
+  store
+    (buffer ~> stringDataL ! (toIx $ offset + 1))
+    $ bitCast csum
