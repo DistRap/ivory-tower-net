@@ -17,6 +17,8 @@ import Ivory.BSP.STM32.Driver.ETH (FrameBuffer)
 import Ivory.Tower.Net.Types
 import Ivory.Serialize
 
+import qualified Ivory.Base
+
 netTower
   :: NetConfig
   -> ( ChanOutput ('Stored IBool)
@@ -26,7 +28,7 @@ netTower
   -> Tower
        e
        ( BackpressureTransmit (Struct "udp_tx") (Stored IBool)
-       , ChanOutput (Struct "udp_packet")
+       , ChanOutput (Struct "udp_rx")
        )
 netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
   netTowerDeps
@@ -535,24 +537,22 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
                           [ iNot isValid ==> invalidUDPs += 1
                           , isValid ==> do
                               -- pass downstream
-                              udpPacket <- local $ izero
+                              udpRxMsg <- local $ izero
                               refCopy
-                                (udpPacket ~> udp_packet_port)
+                                (udpRxMsg ~> udp_rx_port)
                                 (decodedUDP ~> udp_header_target_port)
 
-                              store
-                                (udpPacket ~> udp_packet_data_length)
-                                (udpLen - udpHeaderLength)
+                              Ivory.Base.arrayCopyFromOffset
+                                (udpRxMsg ~> udp_rx_data ~> stringDataL)
+                                (lastRx ~> rx_packet_buffer ~> stringDataL)
+                                (safeCast udpOffset)
+                                (safeCast $ udpLen - udpHeaderLength)
 
                               store
-                                (udpPacket ~> udp_packet_data_offset)
-                                udpOffset
+                                (udpRxMsg ~> udp_rx_data ~> stringLengthL)
+                                (safeCast $ udpLen - udpHeaderLength)
 
-                              refCopy
-                                (udpPacket ~> udp_packet_buffer)
-                                (lastRx ~> rx_packet_buffer)
-
-                              emit udpE (constRef udpPacket)
+                              emit udpE (constRef udpRxMsg)
                           ]
                     ]
           ]

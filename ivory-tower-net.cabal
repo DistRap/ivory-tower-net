@@ -28,6 +28,7 @@ library
                   , ivory-bsp-stm32
                   , ivory-serialize
                   , ivory-stdlib
+                  , ivory-tower-base
                   , tower
                   , tower-config
                   , tower-hal

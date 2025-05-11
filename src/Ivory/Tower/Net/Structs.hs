@@ -126,11 +126,9 @@ udpChecksumOffset = ipOffset + 6
   }
 
   -- Interface
-  struct udp_packet
-  { udp_packet_port        :: Stored Uint16
-  ; udp_packet_buffer      :: FrameBuffer
-  ; udp_packet_data_offset :: Stored Uint16
-  ; udp_packet_data_length :: Stored Uint16
+  struct udp_rx
+  { udp_rx_port      :: Stored Uint16
+  ; udp_rx_data      :: FrameBuffer
   }
 
   struct udp_tx
@@ -154,7 +152,7 @@ netModule = package "eth_structs" $ do
 
   defStruct (Proxy :: Proxy "arp_entry")
 
-  defStruct (Proxy :: Proxy "udp_packet")
+  defStruct (Proxy :: Proxy "udp_rx")
   defStruct (Proxy :: Proxy "udp_tx")
 
   depend ethModule
