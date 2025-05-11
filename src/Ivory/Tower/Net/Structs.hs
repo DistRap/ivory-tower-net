@@ -121,6 +121,12 @@ udpOffset = ipOffset + udpHeaderLength
   ; udp_packet_data_offset :: Stored Uint16
   ; udp_packet_data_length :: Stored Uint16
   }
+
+  struct udp_tx
+  { udp_tx_ip   :: Array 4 (Stored Uint8)
+  ; udp_tx_port :: Stored Uint16
+  ; udp_tx_data :: FrameBuffer
+  }
 |]
 
 -- * Module
@@ -138,6 +144,7 @@ netModule = package "eth_structs" $ do
   defStruct (Proxy :: Proxy "arp_entry")
 
   defStruct (Proxy :: Proxy "udp_packet")
+  defStruct (Proxy :: Proxy "udp_tx")
 
   depend ethModule
   depend serializeModule

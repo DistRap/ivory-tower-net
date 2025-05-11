@@ -1,6 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Ivory.Tower.Net
   ( netTower
@@ -24,13 +25,17 @@ netTower
      )
   -> Tower
        e
-       ( ChanOutput (Struct "udp_packet")
+       ( BackpressureTransmit (Struct "udp_tx") (Stored IBool)
+       , ChanOutput (Struct "udp_packet")
        )
 netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
   netTowerDeps
 
   arpResolve <- channel
-  udp <- channel
+  udpRx <- channel
+  udpTx <- channel
+  udpTxDone <- channel
+  udpTxResolved <- channel
 
   monitor "net" $ do
     ethReady <- state "ethReady"
@@ -38,6 +43,8 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
 
     lastRx <- state "lastRx"
     rxCounter <- stateInit "rxCounter" (ival (0 :: Uint8))
+
+    pendingTx <- state "pendingTx"
 
     (macAddr :: Ref Global (Array 6 (Stored Uint8))) <-
       stateInit
@@ -63,12 +70,37 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
     (arpTable :: Ref Global (Array 10 (Struct "arp_entry"))) <-
       state "arpTable"
 
+    let arpLookup
+          :: ( GetAlloc eff ~ 'Scope s
+             , GetAlloc (AllowBreak eff) ~ 'Scope s
+             , GetBreaks (AllowBreak eff) ~ 'Break
+             )
+          => ConstRef s1 (Array 4 (Stored Uint8))
+          -> (Ref Global (Array 6 (Stored Uint8)) -> Ivory (AllowBreak eff) ())
+          -> Ivory eff IBool
+        arpLookup protoAddr withFound = do
+          found <- local izero
+          arrayMap $ \ix -> do
+            valid <- (arpTable ! ix) ~>* arp_entry_valid
+            when valid $ do
+              protoEq <- arrayEq
+                ((arpTable ! ix) ~> arp_entry_proto_addr)
+                protoAddr
+              when
+                protoEq
+                $ do
+                    store found true
+                    withFound ((arpTable ! ix) ~> arp_entry_hw_addr)
+                    breakOut
+          deref found >>= pure
+
     arpTableFull <- state "arpTableFull"
     invalidUDPs <- stateInit "invalidUDPs" (ival (0 :: Uint32))
 
     -- use states instead of allocating on stack
     arpReq <- state "arpReq"
     arpRep <- state "arpRep"
+    udpReq <- state "udpReq"
     udpRep <- state "udpRep"
 
     handler ready "ethReady" $ do
@@ -92,8 +124,6 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
                 , arp_hw_length         .= ival arp_hw_length_default
                 , arp_proto_length      .= ival arp_proto_length_ipv4
                 , arp_op                .= ival arp_op_request
-                , arp_target_proto_addr .=
-                    (iarray $ map ival $ ipToList "192.168.192.1")
                 ]
 
         refCopy (arpPayload ~> arp_sender_hw_addr) macAddr
@@ -109,8 +139,167 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
         txCounter += 1
         emit txE (constRef arpReq)
 
+    handler (snd udpTx) "udpTx" $ do
+      arpResolveE <- emitter (fst arpResolve) 1
+      udpTxResolvedE <- emitter (fst udpTxResolved) 1
+      callback $ \tx -> do
+        refCopy
+          pendingTx
+          tx
+
+        found <-
+          arpLookup
+            (tx ~> udp_tx_ip)
+            (emit udpTxResolvedE . constRef)
+
+        unless
+          found
+          $ emit arpResolveE (tx ~> udp_tx_ip)
+
+    handler (snd udpTxResolved) "udpTxResolved" $ do
+      txE <- emitter txReq 1
+      udpTxDoneE <- emitter (fst udpTxDone) 1
+      callback $ \targetMac -> do
+        txCounter += 1
+
+        udpDataLength <-
+              (bitCast :: Uint32 -> Uint16) . signCast
+          <$> (pendingTx ~> udp_tx_data ~>* stringLengthL)
+
+        udpPort <- pendingTx ~>* udp_tx_port
+
+        ethHeader <- local
+            $ istruct [ eth_header_eth_type .= ival ether_type_ipv4 ]
+
+        refCopy
+          (ethHeader ~> eth_header_target_mac)
+          targetMac
+        refCopy
+          (ethHeader ~> eth_header_source_mac)
+          macAddr
+
+        packInto (udpReq ~> stringDataL) 0 (constRef ethHeader)
+
+        ipHeader <- local
+            $ istruct
+                [ ip_header_version_ihl .= ival ip_version_ihl_4_20
+                , ip_header_ident .= ival 0x1337
+                , ip_header_ttl .= ival 64
+                , ip_header_protocol .= ival ip_protocol_udp
+                ]
+
+        refCopy
+          (ipHeader ~> ip_header_source_address)
+          ipAddr
+        refCopy
+          (ipHeader ~> ip_header_target_address)
+          (pendingTx ~> udp_tx_ip)
+
+        store
+          (ipHeader ~> ip_header_total_length)
+          (   ipHeaderLength
+            + udpHeaderLength
+            + udpDataLength
+          )
+
+        packInto
+          (udpReq ~> stringDataL)
+          (safeCast ethOffset)
+          (constRef ipHeader)
+
+        i <- checksum
+          udpReq
+          ethOffset
+          (safeCast ipHeaderLength)
+
+        store
+          (udpReq ~> stringDataL ! (toIx $ ethOffset + 10))
+          $ bitCast (i `iShiftR` 8)
+
+        store
+          (udpReq ~> stringDataL ! (toIx $ ethOffset + 11))
+          $ bitCast i
+
+        pseudoHeader <-
+          local
+            $ istruct [ ip_pseudo_header_protocol .= ival ip_protocol_udp ]
+        refCopy
+          (pseudoHeader ~> ip_pseudo_header_source_address)
+          ipAddr
+        refCopy
+          (pseudoHeader ~> ip_pseudo_header_target_address)
+          (pendingTx ~> udp_tx_ip)
+        store
+          (pseudoHeader ~> ip_pseudo_header_length)
+          (   udpHeaderLength
+            + udpDataLength
+          )
+
+        -- put pseudo header right after IP header
+        packInto
+          (udpReq ~> stringDataL)
+          (safeCast ipOffset)
+          (constRef pseudoHeader)
+
+        pseudoHeaderChecksum <-
+          checksum
+            udpReq
+            ipOffset
+            (safeCast ipPseudoHeaderLength)
+
+        udpHeader <-
+          local
+            $ istruct
+                [ udp_header_source_port .= ival udpPort
+                , udp_header_target_port .= ival udpPort
+                , udp_header_length      .= ival (udpDataLength + udpHeaderLength)
+                ]
+
+        packInto
+          (udpReq ~> stringDataL)
+          (safeCast ipOffset)
+          (constRef udpHeader)
+
+
+        arrayCopy
+          (udpReq ~> stringDataL)
+          (pendingTx ~> udp_tx_data ~> stringDataL)
+          (safeCast udpOffset)
+          (safeCast udpDataLength)
+
+        udpChecksum <-
+          checksum
+            udpReq
+            ipOffset
+            (safeCast $ udpDataLength + udpHeaderLength)
+
+        combined
+          <- assign
+          $ iComplement
+          $ (\x -> (x >=? 0xFFFF) ? (x + 1, x))
+          $   ((safeCast :: Uint16 -> Uint32) $ iComplement pseudoHeaderChecksum)
+            + ((safeCast :: Uint16 -> Uint32) $ iComplement udpChecksum)
+
+        store
+          (udpReq ~> stringDataL ! (toIx $ ipOffset + 6))
+          $ bitCast (combined `iShiftR` 8)
+
+        store
+          (udpReq ~> stringDataL ! (toIx $ ipOffset + 7))
+          $ bitCast combined
+
+        store
+          (udpReq ~> stringLengthL)
+          (safeCast $ ethHeaderLength + ipHeaderLength + udpHeaderLength + udpDataLength)
+
+        emit txE (constRef udpReq)
+        -- this should be hooked to ethernet drivers _txDone
+        -- but since it is a ring of at least two descriptors, it's fine for now
+        emitV udpTxDoneE true
+
     handler rxDone "rx" $ do
-      udpE <- emitter (fst udp) 1
+      udpE <- emitter (fst udpRx) 1
+      udpTxResolvedE <- emitter (fst udpTxResolved) 1
       txE <- emitter txReq 1
       callback $ \rx -> do
         rxCounter += 1
@@ -127,25 +316,19 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
               arpOp <- decodedARP ~>* arp_op
               cond_
                 [ arpOp ==? arp_op_reply ==> do
-                    merge <- local izero
-                    -- arpLookup
-                    arrayMap $ \ix -> do
-                      valid <- (arpTable ! ix) ~>* arp_entry_valid
-                      when valid $ do
-                        protoEq <- arrayEq
-                          ((arpTable ! ix) ~> arp_entry_proto_addr)
-                          (decodedARP ~> arp_sender_proto_addr)
-                        when
-                          protoEq
-                          $ do
-                              store merge true
-                              -- Update hardware address
-                              refCopy
-                                ((arpTable ! ix) ~> arp_entry_hw_addr)
-                                (decodedARP ~> arp_sender_hw_addr)
-                              breakOut
+                    emit
+                      udpTxResolvedE
+                      $ constRef (decodedARP ~> arp_sender_hw_addr)
 
-                    merged <- deref merge
+                    merged <-
+                      arpLookup
+                        (constRef (decodedARP ~> arp_sender_proto_addr))
+                        (\mac ->
+                            refCopy
+                              mac
+                              (decodedARP ~> arp_sender_hw_addr)
+                        )
+
                     unless merged $ do
                       inserted <- local izero
                       arrayMap $ \ix -> do
@@ -386,4 +569,7 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
                     ]
           ]
 
-  pure (snd udp)
+  pure
+    ( BackpressureTransmit (fst udpTx) (snd udpTxDone)
+    , snd udpRx
+    )
