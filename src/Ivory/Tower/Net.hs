@@ -97,6 +97,7 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
           deref found >>= pure
 
     arpTableFull <- state "arpTableFull"
+    invalidIPs <- stateInit "invalidIPs" (ival (0 :: Uint32))
     invalidUDPs <- stateInit "invalidUDPs" (ival (0 :: Uint32))
 
     -- use states instead of allocating on stack
@@ -394,7 +395,9 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
                 (safeCast ipHeaderLength)
 
               comment "IP Checksum"
-              assert (ipValid ==? 0x0)
+              unless
+                (ipValid ==? 0)
+                (invalidIPs += 1)
 
               ipProto <- decodedIP ~>* ip_header_protocol
               verIhl <- decodedIP ~>* ip_header_version_ihl
@@ -529,8 +532,6 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
                                   (safeCast $ ipPseudoHeaderLength + udpLen)
 
                               store udpValid (computedChecksum ==? 0)
-                              comment "UDP checksum"
-                              assert (computedChecksum ==? 0)
 
                         isValid <- deref udpValid
                         cond_
