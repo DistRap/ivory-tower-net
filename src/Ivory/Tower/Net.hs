@@ -39,38 +39,44 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
   udpTxDone <- channel
   udpTxResolved <- channel
 
-  monitor "net" $ do
-    ethReady <- state "ethReady"
-    txCounter <- stateInit "txCounter" (ival (0 :: Uint8))
+  monitor (named mempty) $ do
+    ethReady <- state (named "EthReady")
+    txCounter <-
+      stateInit
+        (named "TxCounter")
+        (ival (0 :: Uint8))
 
-    lastRx <- state "lastRx"
-    rxCounter <- stateInit "rxCounter" (ival (0 :: Uint8))
+    lastRx <- state (named "LastRx")
+    rxCounter <-
+      stateInit
+        (named "RxCounter")
+        (ival (0 :: Uint8))
 
-    pendingTx <- state "pendingTx"
+    pendingTx <- state (named "PendingTx")
 
     (macAddr :: Ref Global (Array 6 (Stored Uint8))) <-
       stateInit
-        "macAddr"
+        (named "MacAddr")
         (iarray $ map ival $ unMACAddress netConfigMACAddress)
 
     (ipAddr :: Ref Global (Array 4 (Stored Uint8))) <-
       stateInit
-        "ipAddr"
+        (named "IpAddr")
         (iarray $ map ival $ unIPAddress netConfigIPAddress)
 
     (decodedHeader :: Ref Global (Struct "eth_header")) <-
-      state "decodedHeader"
+      state (named "DecodedHeader")
     (decodedARP :: Ref Global (Struct "arp_packet")) <-
-      state "decodedARP"
+      state (named "DecodedARP")
     (decodedIP :: Ref Global (Struct "ip_header")) <-
-      state "decodedIP"
+      state (named "DecodedIP")
     (decodedICMP :: Ref Global (Struct "icmp_packet")) <-
-      state "decodedICMP"
+      state (named "DecodedICMP")
     (decodedUDP :: Ref Global (Struct "udp_header")) <-
-      state "decodedUDP"
+      state (named "DecodedUDP")
 
     (arpTable :: Ref Global (Array 10 (Struct "arp_entry"))) <-
-      state "arpTable"
+      state (named "ArpTable")
 
     let arpLookup
           :: ( GetAlloc eff ~ 'Scope s
@@ -96,20 +102,20 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
                     breakOut
           deref found >>= pure
 
-    arpTableFull <- state "arpTableFull"
-    invalidIPs <- stateInit "invalidIPs" (ival (0 :: Uint32))
-    invalidUDPs <- stateInit "invalidUDPs" (ival (0 :: Uint32))
+    arpTableFull <- state (named "ArpTableFull")
+    invalidIPs <- stateInit (named "InvalidIPs") (ival (0 :: Uint32))
+    invalidUDPs <- stateInit (named "InvalidUDPs") (ival (0 :: Uint32))
 
     -- use states instead of allocating on stack
-    arpReq <- state "arpReq"
-    arpRep <- state "arpRep"
-    udpReq <- state "udpReq"
-    udpRep <- state "udpRep"
+    arpReq <- state (named "ArpReq")
+    arpRep <- state (named "ArpRep")
+    udpReq <- state (named "UdpReq")
+    udpRep <- state (named "UdpRep")
 
-    handler ready "ethReady" $ do
+    handler ready (named "EthReady") $ do
       callback $ const $ store ethReady true
 
-    handler (snd arpResolve) "arpResolve" $ do
+    handler (snd arpResolve) (named "ArpResolve") $ do
       txE <- emitter txReq 1
       callback $ \query -> do
         (bcastMac :: Ref s (Array 6 (Stored Uint8))) <-
@@ -142,7 +148,7 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
         txCounter += 1
         emit txE (constRef arpReq)
 
-    handler (snd udpTx) "udpTx" $ do
+    handler (snd udpTx) (named "UdpTx") $ do
       arpResolveE <- emitter (fst arpResolve) 1
       udpTxResolvedE <- emitter (fst udpTxResolved) 1
       callback $ \tx -> do
@@ -159,7 +165,7 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
           found
           $ emit arpResolveE (tx ~> udp_tx_ip)
 
-    handler (snd udpTxResolved) "udpTxResolved" $ do
+    handler (snd udpTxResolved) (named "UdpTxResolved") $ do
       txE <- emitter txReq 1
       udpTxDoneE <- emitter (fst udpTxDone) 1
       callback $ \targetMac -> do
@@ -294,7 +300,7 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
         -- but since it is a ring of at least two descriptors, it's fine for now
         emitV udpTxDoneE true
 
-    handler rxDone "rx" $ do
+    handler rxDone (named "Rx") $ do
       udpE <- emitter (fst udpRx) 1
       udpTxResolvedE <- emitter (fst udpTxResolved) 1
       txE <- emitter txReq 1
@@ -562,6 +568,9 @@ netTower NetConfig{..} (ready, BackpressureTransmit txReq _txDone, rxDone) = do
     ( BackpressureTransmit (fst udpTx) (snd udpTxDone)
     , snd udpRx
     )
+  where
+    named :: String -> String
+    named = ("net"++)
 
 storeChecksum
   :: Ref s FrameBuffer
